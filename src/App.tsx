@@ -5,7 +5,7 @@ import {
   SkipForward, Sun, Target, Upload, Volume2, WandSparkles, Moon,
 } from 'lucide-react'
 import './App.css'
-import { parseNovelText, type Chapter } from './novelParse'
+import { decodeNovelBytes, parseNovelText, type Chapter } from './novelParse'
 
 type FontChoice = { label: string; value: string }
 
@@ -199,11 +199,7 @@ function App() {
     if (!file) return
     const reader = new FileReader()
     reader.onload = () => {
-      // 中文 txt 常见 GBK 编码：先按 UTF-8 严格解码，失败则退回 GB18030（兼容 GBK）。
-      let text = ''
-      try { text = new TextDecoder('utf-8', { fatal: true }).decode(reader.result as ArrayBuffer) }
-      catch { text = new TextDecoder('gb18030').decode(reader.result as ArrayBuffer) }
-      const chapters = parseNovelText(text.replace(/^﻿/, ''), file.name.replace(/\.txt$/i, ''))
+      const chapters = parseNovelText(decodeNovelBytes(reader.result as ArrayBuffer), file.name.replace(/\.txt$/i, ''))
       if (chapters.length) { setChapters(chapters); setChapterIndex(0); setParagraphIndex(0); clearInput() }
     }
     reader.readAsArrayBuffer(file)
