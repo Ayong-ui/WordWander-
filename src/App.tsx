@@ -30,12 +30,19 @@ const initialChapters: Chapter[] = [
   { title: '尾声  月亮升起时', done: 0, paragraphs: ['后来，所有的故事都在某个安静的夜晚重新有了回声。'] },
 ]
 
+type Book = { title: string; chapters: Chapter[] }
+const initialBooks: Book[] = [{ title: '雨季之后', chapters: initialChapters }]
+// 内置的两本古腾堡公版书，启动时拉取并解析。
+const builtInTitles = ['红楼梦', '三国演义']
+
 function AppleToggle({ checked, onChange, label }: { checked: boolean; onChange: () => void; label: string }) {
   return <button className={`apple-toggle ${checked ? 'checked' : ''}`} onClick={onChange} aria-label={label} role="switch" aria-checked={checked}><span /></button>
 }
 
 function App() {
-  const [chapters, setChapters] = useState(initialChapters)
+  const [books, setBooks] = useState(initialBooks)
+  const [bookIndex, setBookIndex] = useState(0)
+  const chapters = books[bookIndex].chapters
   const [chapterIndex, setChapterIndex] = useState(0)
   const [paragraphIndex, setParagraphIndex] = useState(0)
   // 已经确认提交的文字，只包含汉字或其他已经完成输入法组合的内容。
@@ -59,6 +66,9 @@ function App() {
   const fileRef = useRef<HTMLInputElement>(null)
 
   const paragraph = chapters[chapterIndex].paragraphs[paragraphIndex] ?? ''
+  // 导入新书可能只换内容不换三个 index，原生监听器闭包会拿到旧段落，所以走 ref。
+  const paragraphRef = useRef(paragraph)
+  paragraphRef.current = paragraph
   const correctCount = useMemo(() => [...committedInput].filter((char, index) => char === paragraph[index]).length, [committedInput, paragraph])
   const accuracy = committedInput.length ? Math.round((correctCount / committedInput.length) * 100) : 100
   const wpm = Math.max(1, Math.round((correctCount / 5) / Math.max(seconds / 60, 0.2)))
@@ -75,7 +85,19 @@ function App() {
     localStorage.setItem('wordwander-progress', JSON.stringify({ chapterIndex, paragraphIndex, totalTyped, errors }))
   }, [committedInput, chapterIndex, paragraphIndex, totalTyped, errors])
 
-  useEffect(() => { inputRef.current?.focus() }, [chapterIndex, paragraphIndex])
+  useEffect(() => { inputRef.current?.focus() }, [chapterIndex, paragraphIndex, bookIndex])
+
+  // StrictMode 下会执行两次，setBooks 内按书名去重。
+  useEffect(() => {
+    Promise.all(builtInTitles.map(async (title) => {
+      const response = await fetch(`/books/${title}.txt`)
+      if (!response.ok) return null
+      const chapters = parseNovelText(decodeNovelBytes(await response.arrayBuffer()), title)
+      return chapters.length ? { title, chapters } : null
+    })).then((loaded) => {
+      setBooks((items) => [...items, ...loaded.filter((book): book is Book => book !== null && !items.some((item) => item.title === book.title))])
+    })
+  }, [])
 
 
   // 只在重新开始、跳过段落、切换章节时调用。
@@ -91,13 +113,18 @@ function App() {
     }
   }
 
+  const updateChapters = (updater: (items: Chapter[]) => Chapter[]) =>
+    setBooks((items) => items.map((book, index) => index === bookIndex ? { ...book, chapters: updater(book.chapters) } : book))
+
   const completeParagraph = () => {
-    setChapters((items) => items.map((chapter, index) => index === chapterIndex ? { ...chapter, done: Math.max(chapter.done, paragraphIndex + 1) } : chapter))
+    updateChapters((items) => items.map((chapter, index) => index === chapterIndex ? { ...chapter, done: Math.max(chapter.done, paragraphIndex + 1) } : chapter))
     if (paragraphIndex < chapters[chapterIndex].paragraphs.length - 1) {
       setParagraphIndex((value) => value + 1)
       clearInput()
     }
   }
+  const completeParagraphRef = useRef(completeParagraph)
+  completeParagraphRef.current = completeParagraph
 
   const skipParagraph = () => {
     setParagraphIndex((value) => Math.min(value + 1, chapters[chapterIndex].paragraphs.length - 1))
@@ -119,14 +146,14 @@ function App() {
 
     const commitText = (data: string) => {
       const previousLength = committedRef.current.length
-      const addedErrors = [...data].filter((char, index) => char !== paragraph[previousLength + index]).length
+      const addedErrors = [...data].filter((char, index) => char !== paragraphRef.current[previousLength + index]).length
       if (addedErrors > 0) setErrors((current) => current + addedErrors)
       const newValue = committedRef.current + data
       committedRef.current = newValue
       setCommittedInput(newValue)
       setTotalTyped((current) => current + data.length)
       syncInputElement()
-      if (newValue.length >= paragraph.length) completeParagraph()
+      if (newValue.length >= paragraphRef.current.length) completeParagraphRef.current()
     }
 
     const deleteChar = () => {
@@ -191,16 +218,25 @@ function App() {
     }
     window.addEventListener('keydown', handleShortcut)
     return () => window.removeEventListener('keydown', handleShortcut)
-  }, [committedInput, paragraph.length])
+  }, [committedInput, paragraph.length, bookIndex, chapterIndex, paragraphIndex])
 
   const selectChapter = (index: number) => { setChapterIndex(index); setParagraphIndex(0); clearInput() }
+  const switchBook = (index: number) => { setBookIndex(index); setChapterIndex(0); setParagraphIndex(0); clearInput() }
   const resetParagraph = () => clearInput()
   const importNovel = (file?: File) => {
     if (!file) return
     const reader = new FileReader()
     reader.onload = () => {
-      const chapters = parseNovelText(decodeNovelBytes(reader.result as ArrayBuffer), file.name.replace(/\.txt$/i, ''))
-      if (chapters.length) { setChapters(chapters); setChapterIndex(0); setParagraphIndex(0); clearInput() }
+      const title = file.name.replace(/\.txt$/i, '')
+      const chapters = parseNovelText(decodeNovelBytes(reader.result as ArrayBuffer), title)
+      if (!chapters.length) return
+      const existing = books.findIndex((book) => book.title === title)
+      const next = existing >= 0 ? books.map((book, index) => index === existing ? { title, chapters } : book) : [...books, { title, chapters }]
+      setBooks(next)
+      setBookIndex(existing >= 0 ? existing : books.length)
+      setChapterIndex(0)
+      setParagraphIndex(0)
+      clearInput()
     }
     reader.readAsArrayBuffer(file)
   }
@@ -212,14 +248,18 @@ function App() {
         <div className="brand"><div className="brand-mark"><WandSparkles size={16} /></div><div><strong>WordWander</strong><span>墨色 · 字间漫游</span></div></div>
         <div className="sidebar-section library-head"><span>我的书库</span><button className="icon-button" onClick={() => fileRef.current?.click()} title="导入 TXT"><Upload size={16} /></button><input ref={fileRef} type="file" accept=".txt,text/plain" hidden onChange={(event) => importNovel(event.target.files?.[0])} /></div>
         <div className="search-box"><Search size={15} /><input placeholder="寻找一段文字" /></div>
-        <div className="novel-card active"><div className="novel-seal"><BookOpen size={21} /></div><div className="novel-meta"><strong>雨季之后</strong><span>林深 · 正在练习</span><div className="mini-progress"><i style={{ width: `${chapterProgress}%` }} /></div></div><MoreHorizontal size={17} className="muted" /></div>
+        {books.map((book, index) => {
+          const done = book.chapters.reduce((sum, chapter) => sum + chapter.done, 0)
+          const total = book.chapters.reduce((sum, chapter) => sum + chapter.paragraphs.length, 0)
+          return <div key={book.title} className={`novel-card ${index === bookIndex ? 'active' : ''}`} onClick={() => switchBook(index)}><div className="novel-seal"><BookOpen size={21} /></div><div className="novel-meta"><strong>{book.title}</strong><span>{book.chapters.length} 章 · 正在练习</span><div className="mini-progress"><i style={{ width: `${total ? Math.round((done / total) * 100) : 0}%` }} /></div></div><MoreHorizontal size={17} className="muted" /></div>
+        })}
         <div className="sidebar-section chapter-label"><span>章节目录</span><span className="muted">{chapters.length} 章</span></div>
-        <div className="chapter-list">{chapters.map((chapter, index) => <button key={chapter.title} className={`chapter-item ${index === chapterIndex ? 'selected' : ''}`} onClick={() => selectChapter(index)}><span className="chapter-chevron">{index === chapterIndex ? <ChevronDown size={15} /> : <ChevronRight size={15} />}</span><span className="chapter-name">{chapter.title}</span>{chapter.done > 0 && <span className="chapter-done">{Math.round((chapter.done / chapter.paragraphs.length) * 100)}%</span>}</button>)}</div>
+        <div className="chapter-list">{chapters.map((chapter, index) => <button key={`${index}-${chapter.title}`} className={`chapter-item ${index === chapterIndex ? 'selected' : ''}`} onClick={() => selectChapter(index)}><span className="chapter-chevron">{index === chapterIndex ? <ChevronDown size={15} /> : <ChevronRight size={15} />}</span><span className="chapter-name">{chapter.title}</span>{chapter.done > 0 && <span className="chapter-done">{Math.round((chapter.done / chapter.paragraphs.length) * 100)}%</span>}</button>)}</div>
         <div className="sidebar-bottom"><button className="utility-button"><FolderOpen size={16} />最近导入</button><button className="utility-button"><Settings2 size={16} />偏好设置</button></div>
       </aside>
 
       <main className="main-content">
-        <header className="topbar"><div className="breadcrumb"><span>雨季之后</span><span className="slash">·</span><strong>{chapters[chapterIndex].title}</strong></div><div className="top-actions"><span className="autosave"><span className="status-dot" />墨迹已保存</span><div className="theme-switch"><Sun size={14} /><AppleToggle checked={isDark} onChange={() => setIsDark((value) => !value)} label="切换夜间模式" /><Moon size={13} /></div><button className="avatar">Y</button></div></header>
+        <header className="topbar"><div className="breadcrumb"><span>{books[bookIndex].title}</span><span className="slash">·</span><strong>{chapters[chapterIndex].title}</strong></div><div className="top-actions"><span className="autosave"><span className="status-dot" />墨迹已保存</span><div className="theme-switch"><Sun size={14} /><AppleToggle checked={isDark} onChange={() => setIsDark((value) => !value)} label="切换夜间模式" /><Moon size={13} /></div><button className="avatar">Y</button></div></header>
         <section className="workspace">
           <div className="practice-header"><div><div className="eyebrow"><span className="eyebrow-line" />字间练习</div><h1>{chapters[chapterIndex].title}</h1><p>第 {paragraphIndex + 1} 段 <span className="dot-separator">·</span> 每一次落笔，都让故事更近一点</p></div><div className="chapter-progress"><div className="progress-top"><span>章节进度</span><strong>{chapterProgress}%</strong></div><div className="progress-track"><i style={{ width: `${chapterProgress}%` }} /></div></div></div>
           <div className="reading-card">
