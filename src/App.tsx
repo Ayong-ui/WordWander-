@@ -5,8 +5,8 @@ import {
   SkipForward, Sun, Target, Upload, Volume2, WandSparkles, Moon,
 } from 'lucide-react'
 import './App.css'
+import { parseNovelText, type Chapter } from './novelParse'
 
-type Chapter = { title: string; paragraphs: string[]; done: number }
 type FontChoice = { label: string; value: string }
 
 const fonts: FontChoice[] = [
@@ -199,10 +199,14 @@ function App() {
     if (!file) return
     const reader = new FileReader()
     reader.onload = () => {
-      const paragraphs = String(reader.result ?? '').split(/\n\s*\n|\r?\n/).map((item) => item.trim()).filter(Boolean)
-      if (paragraphs.length) { setChapters([{ title: file.name.replace(/\.txt$/i, ''), paragraphs, done: 0 }]); setChapterIndex(0); setParagraphIndex(0); clearInput() }
+      // 中文 txt 常见 GBK 编码：先按 UTF-8 严格解码，失败则退回 GB18030（兼容 GBK）。
+      let text = ''
+      try { text = new TextDecoder('utf-8', { fatal: true }).decode(reader.result as ArrayBuffer) }
+      catch { text = new TextDecoder('gb18030').decode(reader.result as ArrayBuffer) }
+      const chapters = parseNovelText(text.replace(/^﻿/, ''), file.name.replace(/\.txt$/i, ''))
+      if (chapters.length) { setChapters(chapters); setChapterIndex(0); setParagraphIndex(0); clearInput() }
     }
-    reader.readAsText(file)
+    reader.readAsArrayBuffer(file)
   }
   const formatTime = (value: number) => `${String(Math.floor(value / 60)).padStart(2, '0')}:${String(value % 60).padStart(2, '0')}`
 
